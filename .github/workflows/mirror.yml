@@ -1,65 +1,29 @@
-name: Зеркало footbook.ru
-
-on:
-  workflow_dispatch:  # Ручной запуск
-
-jobs:
-  mirror:
-    runs-on: ubuntu-latest
+- name: Авторизация и получение кук
+  run: |
+    # Используем HTTP
+    curl -L http://footbook.ru/index.php -c cookies.txt -b cookies.txt -o /dev/null
     
-    steps:
-      - name: Авторизация и получение кук
-        run: |
-          # Шаг 1: Получаем куки с главной страницы
-          curl -L https://footbook.ru/index.php -c cookies.txt -b cookies.txt -o /dev/null
-          
-          # Шаг 2: Отправляем форму логина
-          curl -X POST https://footbook.ru/login.php \
-               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-               -H "Content-Type: application/x-www-form-urlencoded" \
-               -d "login=${{ secrets.SITE_LOGIN }}" \
-               -d "password=${{ secrets.SITE_PASSWORD }}" \
-               -d "remember=on" \
-               -b cookies.txt \
-               -c cookies.txt \
-               -L \
-               -o /dev/null
-          
-          # Проверяем, что куки сохранились
-          echo "=== Полученные куки ==="
-          cat cookies.txt
-      
-      - name: Скачивание сайта с авторизацией
-        run: |
-          wget --mirror \
-               --page-requisites \
-               --convert-links \
-               --adjust-extension \
-               --no-parent \
-               --domains=footbook.ru \
-               --load-cookies cookies.txt \
-               --header="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-               --wait=2 \
-               --limit-rate=200k \
-               --tries=3 \
-               --timeout=30 \
-               https://footbook.ru
-      
-      - name: Архивация и разбивка на части
-        run: |
-          # Создаём архив
-          tar -czf footbook-mirror.tar.gz ./footbook.ru
-          
-          # Разбиваем на части по 500 МБ
-          split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
-          
-          # Проверяем результат
-          ls -lh footbook-part-*
-          echo "Количество частей: $(ls footbook-part-* | wc -l)"
-      
-      - name: Загрузка всех частей
-        uses: actions/upload-artifact@v4
-        with:
-          name: footbook-mirror-parts
-          path: footbook-part-*
-          retention-days: 7
+    curl -X POST http://footbook.ru/login.php \
+         -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+         -H "Content-Type: application/x-www-form-urlencoded" \
+         -d "login=${{ secrets.SITE_LOGIN }}" \
+         -d "password=${{ secrets.SITE_PASSWORD }}" \
+         -d "remember=on" \
+         -b cookies.txt \
+         -c cookies.txt \
+         -L \
+         -o /dev/null
+
+- name: Скачивание сайта с авторизацией
+  run: |
+    wget --mirror \
+         --page-requisites \
+         --convert-links \
+         --adjust-extension \
+         --no-parent \
+         --domains=footbook.ru \
+         --load-cookies cookies.txt \
+         --header="User-Agent: Mozilla/5.0" \
+         --wait=2 \
+         --limit-rate=200k \
+         http://footbook.ru  # <-- Здесь тоже меняем на http
