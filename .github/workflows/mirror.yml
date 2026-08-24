@@ -1,0 +1,43 @@
+name: Зеркало footbook.ru
+
+on:
+  workflow_dispatch:  # Только ручной запуск
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Скачивание сайта с авторизацией
+        run: |
+          wget --mirror \
+               --page-requisites \
+               --convert-links \
+               --adjust-extension \
+               --no-parent \
+               --domains=footbook.ru \
+               --user="${{ secrets.SITE_LOGIN }}" \
+               --password="${{ secrets.SITE_PASSWORD }}" \
+               --auth-no-challenge \
+               --header="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+               --wait=2 \
+               --limit-rate=200k \
+               https://footbook.ru
+          
+      - name: Архивация и разбивка на части
+        run: |
+          # Создаём архив
+          tar -czf footbook-mirror.tar.gz ./footbook.ru
+          
+          # Разбиваем на части по 500 МБ
+          split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
+          
+          # Проверяем результат
+          ls -lh footbook-part-*
+      
+      - name: Загрузка всех частей
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbook-mirror-parts
+          path: footbook-part-*
+          retention-days: 7
