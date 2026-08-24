@@ -1,21 +1,22 @@
 name: Зеркало footbook.ru
 
 on:
-  workflow_dispatch:  # Только ручной запуск
+  workflow_dispatch:
 
 jobs:
   mirror:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Авторизация и получение кук
+      - name: Авторизация и получение кук (улучшенная)
         run: |
-          # Шаг 1: Получаем куки с главной страницы (HTTP, IPv4, таймауты)
+          # Шаг 1: Получаем куки с главной
           curl -4 --connect-timeout 60 --max-time 300 \
                -L http://footbook.ru/index.php \
                -c cookies.txt -b cookies.txt -o /dev/null
           
           # Шаг 2: Отправляем форму логина
+          # Важно: сохраняем куки ДО и ПОСЛЕ отправки
           curl -4 --connect-timeout 60 --max-time 300 \
                -X POST http://footbook.ru/login.php \
                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
@@ -25,22 +26,40 @@ jobs:
                -d "password=${{ secrets.SITE_PASSWORD }}" \
                -d "remember=on" \
                -b cookies.txt \
-               -c cookies.txt \
+               -c cookies.txt \  # Сохраняем куки ПОСЛЕ отправки формы
                -L \
-               -o /dev/null
+               -v  # Добавляем verbose режим для отладки
           
-          # Проверяем, что куки сохранились
-          echo "=== Полученные куки ==="
+          # Показываем финальные куки
+          echo "=== Финальные куки ==="
           cat cookies.txt
           
-          # Дополнительная проверка авторизации
-          echo "=== Проверка доступа к защищённой странице ==="
-          curl -4 --connect-timeout 30 --max-time 60 \
-               -L http://footbook.ru/index.php \
-               -b cookies.txt \
-               | grep -i "выйти\|logout\|личный кабинет" \
-               && echo "✅ Авторизация успешна!" \
-               || echo "⚠️ Авторизация НЕ пройдена!"
+          # Проверяем, что куки обновились
+          if grep -q "PHPSESSID" cookies.txt; then
+            echo "✅ Сессия создана!"
+          else
+            echo "❌ Сессия не создана!"
+          fi
+      
+      - name: Проверка авторизации (на странице профиля)
+        run: |
+          # Пытаемся зайти на страницу, которая точно требует авторизации
+          # Обычно это /profile.php, /account.php, /cabinet.php
+          echo "=== Проверка доступа к защищённым страницам ==="
+          
+          # Пробуем разные возможные URL
+          for url in "profile.php" "account.php" "cabinet.php" "user.php" "lk.php"; do
+            echo "--- Проверка http://footbook.ru/$url ---"
+            RESPONSE=$(curl -4 -L http://footbook.ru/$url -b cookies.txt -s)
+            
+            if echo "$RESPONSE" | grep -qi "выйти\|logout\|личный кабинет\|мои данные\|привет"; then
+              echo "✅ ДОСТУП ПОЛУЧЕН на $url"
+              echo "$RESPONSE" | head -50
+              break
+            else
+              echo "❌ Нет доступа к $url"
+            fi
+          done
       
       - name: Скачивание сайта с авторизацией
         run: |
@@ -54,37 +73,22 @@ jobs:
                --no-parent \
                --domains=footbook.ru \
                --load-cookies cookies.txt \
+               --keep-session-cookies \  # Важно! Сохраняет сессионные куки
                --header="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
                --header="Referer: http://footbook.ru/" \
                --wait=2 \
                --limit-rate=200k \
-               --no-check-certificate \
                http://footbook.ru
-          
-          # Проверяем, что скачалось
-          echo "=== Размер скачанного сайта ==="
-          du -sh ./footbook.ru || echo "⚠️ Папка не создана!"
-          echo "=== Количество файлов ==="
-          find ./footbook.ru -type f | wc -l || echo "0"
       
-      - name: Архивация и разбивка на части
+      - name: Архивация и разбивка
         run: |
-          # Создаём архив
           tar -czf footbook-mirror.tar.gz ./footbook.ru
-          
-          # Разбиваем на части по 500 МБ
           split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
-          
-          # Проверяем результат
-          echo "=== Созданные части ==="
           ls -lh footbook-part-*
-          echo "Количество частей: $(ls footbook-part-* 2>/dev/null | wc -l)"
-          echo "Общий размер: $(du -sh footbook-part-* 2>/dev/null | tail -1)"
       
-      - name: Загрузка всех частей
+      - name: Загрузка артефактов
         uses: actions/upload-artifact@v4
         with:
           name: footbook-mirror-parts
           path: footbook-part-*
           retention-days: 7
-          if-no-files-found: error
