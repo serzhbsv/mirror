@@ -1,29 +1,90 @@
-- name: Авторизация и получение кук
-  run: |
-    # Используем HTTP
-    curl -L http://footbook.ru/index.php -c cookies.txt -b cookies.txt -o /dev/null
-    
-    curl -X POST http://footbook.ru/login.php \
-         -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-         -H "Content-Type: application/x-www-form-urlencoded" \
-         -d "login=${{ secrets.SITE_LOGIN }}" \
-         -d "password=${{ secrets.SITE_PASSWORD }}" \
-         -d "remember=on" \
-         -b cookies.txt \
-         -c cookies.txt \
-         -L \
-         -o /dev/null
+name: Зеркало footbook.ru
 
-- name: Скачивание сайта с авторизацией
-  run: |
-    wget --mirror \
-         --page-requisites \
-         --convert-links \
-         --adjust-extension \
-         --no-parent \
-         --domains=footbook.ru \
-         --load-cookies cookies.txt \
-         --header="User-Agent: Mozilla/5.0" \
-         --wait=2 \
-         --limit-rate=200k \
-         http://footbook.ru  # <-- Здесь тоже меняем на http
+on:
+  workflow_dispatch:  # Только ручной запуск
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Авторизация и получение кук
+        run: |
+          # Шаг 1: Получаем куки с главной страницы (HTTP, IPv4, таймауты)
+          curl -4 --connect-timeout 60 --max-time 300 \
+               -L http://footbook.ru/index.php \
+               -c cookies.txt -b cookies.txt -o /dev/null
+          
+          # Шаг 2: Отправляем форму логина
+          curl -4 --connect-timeout 60 --max-time 300 \
+               -X POST http://footbook.ru/login.php \
+               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+               -H "Content-Type: application/x-www-form-urlencoded" \
+               -H "Referer: http://footbook.ru/login.php" \
+               -d "login=${{ secrets.SITE_LOGIN }}" \
+               -d "password=${{ secrets.SITE_PASSWORD }}" \
+               -d "remember=on" \
+               -b cookies.txt \
+               -c cookies.txt \
+               -L \
+               -o /dev/null
+          
+          # Проверяем, что куки сохранились
+          echo "=== Полученные куки ==="
+          cat cookies.txt
+          
+          # Дополнительная проверка авторизации
+          echo "=== Проверка доступа к защищённой странице ==="
+          curl -4 --connect-timeout 30 --max-time 60 \
+               -L http://footbook.ru/index.php \
+               -b cookies.txt \
+               | grep -i "выйти\|logout\|личный кабинет" \
+               && echo "✅ Авторизация успешна!" \
+               || echo "⚠️ Авторизация НЕ пройдена!"
+      
+      - name: Скачивание сайта с авторизацией
+        run: |
+          wget --inet4-only \
+               --timeout=60 \
+               --tries=5 \
+               --mirror \
+               --page-requisites \
+               --convert-links \
+               --adjust-extension \
+               --no-parent \
+               --domains=footbook.ru \
+               --load-cookies cookies.txt \
+               --header="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+               --header="Referer: http://footbook.ru/" \
+               --wait=2 \
+               --limit-rate=200k \
+               --no-check-certificate \
+               http://footbook.ru
+          
+          # Проверяем, что скачалось
+          echo "=== Размер скачанного сайта ==="
+          du -sh ./footbook.ru || echo "⚠️ Папка не создана!"
+          echo "=== Количество файлов ==="
+          find ./footbook.ru -type f | wc -l || echo "0"
+      
+      - name: Архивация и разбивка на части
+        run: |
+          # Создаём архив
+          tar -czf footbook-mirror.tar.gz ./footbook.ru
+          
+          # Разбиваем на части по 500 МБ
+          split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
+          
+          # Проверяем результат
+          echo "=== Созданные части ==="
+          ls -lh footbook-part-*
+          echo "Количество частей: $(ls footbook-part-* 2>/dev/null | wc -l)"
+          echo "Общий размер: $(du -sh footbook-part-* 2>/dev/null | tail -1)"
+      
+      - name: Загрузка всех частей
+        uses: actions/upload-artifact@v4
+        with:
+          name: footbook-mirror-parts
+          path: footbook-part-*
+          retention-days: 7
+          if-no-files-found: error
