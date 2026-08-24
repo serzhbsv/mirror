@@ -10,7 +10,7 @@ jobs:
     steps:
       - name: Авторизация и получение кук
         run: |
-          # Шаг 1: Получаем куки с главной (игнорируем сертификат)
+          # Шаг 1: Получаем куки с главной
           curl -k -4 --connect-timeout 60 --max-time 300 \
                -L https://footbook.ru/index.php \
                -c cookies.txt -b cookies.txt -o /dev/null
@@ -26,28 +26,12 @@ jobs:
                -d "remember=on" \
                -b cookies.txt \
                -c cookies.txt \
-               -L \
-               -v 2>&1 | grep -E "cookie|HTTP|Location|PHPSESSID"
+               -L
           
-          # Показываем куки
-          echo "=== Полученные куки ==="
+          echo "=== Куки получены ==="
           cat cookies.txt
       
-      - name: Проверка авторизации
-        run: |
-          # Проверяем наличие сессии
-          if grep -q "PHPSESSID" cookies.txt; then
-            echo "✅ Сессия создана!"
-          else
-            echo "❌ Сессия НЕ создана!"
-            exit 1
-          fi
-          
-          # Пытаемся получить доступ к защищённой странице
-          echo "=== Проверка доступа ==="
-          curl -k -4 -L https://footbook.ru/index.php -b cookies.txt -s | grep -i "выйти\|logout" && echo "✅ ДОСТУП ПОЛУЧЕН" || echo "⚠️ Доступ не проверен"
-      
-      - name: Скачивание сайта с авторизацией
+      - name: Скачивание сайта (без logout)
         run: |
           wget --inet4-only \
                --no-check-certificate \
@@ -65,26 +49,22 @@ jobs:
                --header="Referer: https://footbook.ru/" \
                --wait=2 \
                --limit-rate=200k \
+               --reject-regex=".*logout.*|.*signout.*|.*exit.*" \
+               --exclude-directories="logout,exit,signout" \
                https://footbook.ru
           
-          # Проверяем результат
-          echo "=== Размер скачанного сайта ==="
-          du -sh ./footbook.ru 2>/dev/null || echo "⚠️ Папка не создана"
-          echo "=== Количество файлов ==="
-          find ./footbook.ru -type f 2>/dev/null | wc -l || echo "0"
-          echo "=== Первые 10 файлов ==="
-          find ./footbook.ru -type f 2>/dev/null | head -10
+          echo "=== Результат ==="
+          du -sh ./footbook.ru 2>/dev/null || echo "Папка не создана"
+          find ./footbook.ru -type f 2>/dev/null | wc -l
       
       - name: Архивация и разбивка
         run: |
           if [ -d "./footbook.ru" ] && [ "$(ls -A ./footbook.ru)" ]; then
             tar -czf footbook-mirror.tar.gz ./footbook.ru
             split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
-            echo "=== Созданные части ==="
             ls -lh footbook-part-*
-            echo "Количество частей: $(ls footbook-part-* 2>/dev/null | wc -l)"
           else
-            echo "⚠️ Папка пуста или не создана!"
+            echo "⚠️ Папка пуста!"
             exit 1
           fi
       
@@ -94,4 +74,3 @@ jobs:
           name: footbook-mirror-parts
           path: footbook-part-*
           retention-days: 7
-          if-no-files-found: error
