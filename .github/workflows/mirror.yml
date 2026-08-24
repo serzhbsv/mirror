@@ -8,62 +8,49 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Авторизация и получение кук (улучшенная)
+      - name: Авторизация и получение кук
         run: |
-          # Шаг 1: Получаем куки с главной
-          curl -4 --connect-timeout 60 --max-time 300 \
-               -L http://footbook.ru/index.php \
+          # Шаг 1: Получаем куки с главной (игнорируем сертификат)
+          curl -k -4 --connect-timeout 60 --max-time 300 \
+               -L https://footbook.ru/index.php \
                -c cookies.txt -b cookies.txt -o /dev/null
           
           # Шаг 2: Отправляем форму логина
-          # Важно: сохраняем куки ДО и ПОСЛЕ отправки
-          curl -4 --connect-timeout 60 --max-time 300 \
-               -X POST http://footbook.ru/login.php \
+          curl -k -4 --connect-timeout 60 --max-time 300 \
+               -X POST https://footbook.ru/login.php \
                -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
                -H "Content-Type: application/x-www-form-urlencoded" \
-               -H "Referer: http://footbook.ru/login.php" \
+               -H "Referer: https://footbook.ru/login.php" \
                -d "login=${{ secrets.SITE_LOGIN }}" \
                -d "password=${{ secrets.SITE_PASSWORD }}" \
                -d "remember=on" \
                -b cookies.txt \
-               -c cookies.txt \  # Сохраняем куки ПОСЛЕ отправки формы
+               -c cookies.txt \
                -L \
-               -v  # Добавляем verbose режим для отладки
+               -v 2>&1 | grep -E "cookie|HTTP|Location|PHPSESSID"
           
-          # Показываем финальные куки
-          echo "=== Финальные куки ==="
+          # Показываем куки
+          echo "=== Полученные куки ==="
           cat cookies.txt
-          
-          # Проверяем, что куки обновились
+      
+      - name: Проверка авторизации
+        run: |
+          # Проверяем наличие сессии
           if grep -q "PHPSESSID" cookies.txt; then
             echo "✅ Сессия создана!"
           else
-            echo "❌ Сессия не создана!"
+            echo "❌ Сессия НЕ создана!"
+            exit 1
           fi
-      
-      - name: Проверка авторизации (на странице профиля)
-        run: |
-          # Пытаемся зайти на страницу, которая точно требует авторизации
-          # Обычно это /profile.php, /account.php, /cabinet.php
-          echo "=== Проверка доступа к защищённым страницам ==="
           
-          # Пробуем разные возможные URL
-          for url in "profile.php" "account.php" "cabinet.php" "user.php" "lk.php"; do
-            echo "--- Проверка http://footbook.ru/$url ---"
-            RESPONSE=$(curl -4 -L http://footbook.ru/$url -b cookies.txt -s)
-            
-            if echo "$RESPONSE" | grep -qi "выйти\|logout\|личный кабинет\|мои данные\|привет"; then
-              echo "✅ ДОСТУП ПОЛУЧЕН на $url"
-              echo "$RESPONSE" | head -50
-              break
-            else
-              echo "❌ Нет доступа к $url"
-            fi
-          done
+          # Пытаемся получить доступ к защищённой странице
+          echo "=== Проверка доступа ==="
+          curl -k -4 -L https://footbook.ru/index.php -b cookies.txt -s | grep -i "выйти\|logout" && echo "✅ ДОСТУП ПОЛУЧЕН" || echo "⚠️ Доступ не проверен"
       
       - name: Скачивание сайта с авторизацией
         run: |
           wget --inet4-only \
+               --no-check-certificate \
                --timeout=60 \
                --tries=5 \
                --mirror \
@@ -73,18 +60,33 @@ jobs:
                --no-parent \
                --domains=footbook.ru \
                --load-cookies cookies.txt \
-               --keep-session-cookies \  # Важно! Сохраняет сессионные куки
+               --keep-session-cookies \
                --header="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-               --header="Referer: http://footbook.ru/" \
+               --header="Referer: https://footbook.ru/" \
                --wait=2 \
                --limit-rate=200k \
-               http://footbook.ru
+               https://footbook.ru
+          
+          # Проверяем результат
+          echo "=== Размер скачанного сайта ==="
+          du -sh ./footbook.ru 2>/dev/null || echo "⚠️ Папка не создана"
+          echo "=== Количество файлов ==="
+          find ./footbook.ru -type f 2>/dev/null | wc -l || echo "0"
+          echo "=== Первые 10 файлов ==="
+          find ./footbook.ru -type f 2>/dev/null | head -10
       
       - name: Архивация и разбивка
         run: |
-          tar -czf footbook-mirror.tar.gz ./footbook.ru
-          split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
-          ls -lh footbook-part-*
+          if [ -d "./footbook.ru" ] && [ "$(ls -A ./footbook.ru)" ]; then
+            tar -czf footbook-mirror.tar.gz ./footbook.ru
+            split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
+            echo "=== Созданные части ==="
+            ls -lh footbook-part-*
+            echo "Количество частей: $(ls footbook-part-* 2>/dev/null | wc -l)"
+          else
+            echo "⚠️ Папка пуста или не создана!"
+            exit 1
+          fi
       
       - name: Загрузка артефактов
         uses: actions/upload-artifact@v4
@@ -92,3 +94,4 @@ jobs:
           name: footbook-mirror-parts
           path: footbook-part-*
           retention-days: 7
+          if-no-files-found: error
