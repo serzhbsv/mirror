@@ -45,19 +45,76 @@ jobs:
 
           console.log(`📊 Максимальная глубина: ${MAX_DEPTH}`);
 
-          // Авторизация
+          // Авторизация (исправленная)
           async function login(page) {
             console.log('🔄 Авторизация...');
             
-            await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-            
-            await page.type('input[name="login"]', process.env.SITE_LOGIN);
-            await page.type('input[name="password"]', process.env.SITE_PASSWORD);
-            await page.click('input[type="submit"]');
-            
-            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
-            
-            console.log('✅ Авторизация успешна');
+            try {
+              // Переход на главную страницу
+              await page.goto(BASE_URL, { 
+                waitUntil: 'networkidle2', 
+                timeout: 60000 
+              });
+              
+              // Ждём появления формы входа
+              await page.waitForSelector('input[name="login"]', { timeout: 10000 });
+              await page.waitForSelector('input[name="password"]', { timeout: 10000 });
+              
+              // Вводим логин
+              await page.type('input[name="login"]', process.env.SITE_LOGIN, { delay: 50 });
+              console.log('✅ Логин введён');
+              
+              // Вводим пароль
+              await page.type('input[name="password"]', process.env.SITE_PASSWORD, { delay: 50 });
+              console.log('✅ Пароль введён');
+              
+              // Нажимаем на кнопку через evaluate (более надёжно)
+              await page.evaluate(() => {
+                const submitButton = document.querySelector('input[type="submit"]');
+                if (submitButton) {
+                  submitButton.click();
+                  return true;
+                }
+                return false;
+              });
+              
+              console.log('✅ Кнопка отправки нажата');
+              
+              // Ждём перехода после логина
+              await page.waitForNavigation({ 
+                waitUntil: 'networkidle2', 
+                timeout: 60000 
+              });
+              
+              // Проверяем, что авторизация прошла успешно
+              const currentUrl = page.url();
+              console.log(`📍 Текущий URL после логина: ${currentUrl}`);
+              
+              if (currentUrl.includes('login.php')) {
+                console.log('⚠️ Возможно, авторизация не прошла. Проверьте логин/пароль.');
+                // Проверяем наличие ошибки
+                const errorText = await page.evaluate(() => {
+                  const error = document.querySelector('.error, .alert, .message');
+                  return error ? error.textContent : null;
+                });
+                if (errorText) {
+                  console.log(`❌ Ошибка авторизации: ${errorText}`);
+                  throw new Error('Ошибка авторизации');
+                }
+              } else {
+                console.log('✅ Авторизация успешна!');
+              }
+              
+              // Сохраняем куки для использования в wget
+              const cookies = await page.cookies();
+              const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+              await fs.writeFile('cookies.txt', cookieString);
+              console.log('✅ Куки сохранены');
+              
+            } catch (error) {
+              console.error('❌ Ошибка при авторизации:', error.message);
+              throw error;
+            }
           }
 
           // Сбор ссылок с одной страницы
@@ -78,12 +135,13 @@ jobs:
                   { timeout: 10000 }
                 );
               } catch (e) {
-                // Дерево не найдено - продолжаем
+                console.log('⏳ Дерево не найдено или уже загружено');
               }
               
               // Собираем ссылки
               const links = await page.evaluate(() => {
                 const result = new Set();
+                const excludeWords = ['logout', 'exit', 'signout'];
                 
                 // Обычные ссылки
                 document.querySelectorAll('a[href]').forEach(a => {
@@ -92,7 +150,9 @@ jobs:
                     if (href.startsWith('/')) {
                       href = window.location.origin + href;
                     }
-                    if (!href.includes('logout') && !href.includes('exit')) {
+                    // Проверяем на исключения
+                    const shouldExclude = excludeWords.some(word => href.toLowerCase().includes(word));
+                    if (!shouldExclude) {
                       result.add(href);
                     }
                   }
@@ -102,7 +162,8 @@ jobs:
                 document.querySelectorAll('.jstree-node').forEach(node => {
                   const id = node.getAttribute('id');
                   if (id && id !== '#') {
-                    result.add(`${window.location.origin}/index.php?type=1&lid=${id}`);
+                    const link = `${window.location.origin}/index.php?type=1&lid=${id}`;
+                    result.add(link);
                   }
                 });
                 
@@ -119,7 +180,8 @@ jobs:
                         data: { par: 'all' },
                         type: 'POST',
                         cache: false,
-                        success: (data) => resolve(data)
+                        success: (data) => resolve(data),
+                        error: () => resolve([])
                       });
                     } else {
                       resolve([]);
@@ -127,32 +189,30 @@ jobs:
                   });
                 }).catch(() => []);
                 
-                if (Array.isArray(cities)) {
+                if (Array.isArray(cities) && cities.length > 0) {
                   cities.forEach(city => {
                     if (city.id) {
                       allLinks.add(`${BASE_URL}/index.php?type=2&pid=${city.id}`);
                     }
                   });
+                  console.log(`🏙️ Добавлено городов: ${cities.length}`);
                 }
               } catch (e) {
-                // Ошибка получения городов
+                console.log('⏳ Города не загружены');
               }
               
               // Добавляем ссылки в общий список
-              links.forEach(link => {
-                if (link.startsWith(BASE_URL) && !link.includes('logout')) {
-                  allLinks.add(link);
-                }
+              const filteredLinks = links.filter(link => {
+                const excludeWords = ['logout', 'exit', 'signout'];
+                const shouldExclude = excludeWords.some(word => link.toLowerCase().includes(word));
+                return link.startsWith(BASE_URL) && !shouldExclude;
               });
               
-              console.log(`📊 Найдено ссылок на странице: ${links.length}`);
+              filteredLinks.forEach(link => allLinks.add(link));
               
-              // Возвращаем ссылки для дальнейшего обхода
-              return links.filter(link => 
-                link.startsWith(BASE_URL) && 
-                !link.includes('logout') &&
-                !link.includes('exit')
-              );
+              console.log(`📊 Найдено ссылок на странице: ${filteredLinks.length}`);
+              
+              return filteredLinks;
               
             } catch (error) {
               console.error(`❌ Ошибка на ${url}:`, error.message);
@@ -167,12 +227,19 @@ jobs:
             
             const browser = await puppeteer.launch({
               headless: 'new',
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
+              args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu'
+              ]
             });
             
             const page = await browser.newPage();
             await page.setDefaultNavigationTimeout(60000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+            await page.setViewport({ width: 1280, height: 800 });
             
             // Авторизация
             await login(page);
@@ -182,7 +249,7 @@ jobs:
             
             // Обход страниц
             let processed = 0;
-            const maxPages = 500; // Ограничение для безопасности
+            const maxPages = 300; // Ограничение для безопасности
             
             while (queue.length > 0 && processed < maxPages) {
               const { url, depth } = queue.shift();
@@ -198,7 +265,7 @@ jobs:
               // Собираем ссылки
               const newLinks = await collectLinksFromPage(page, url, depth);
               
-              // Добавляем новые ссылки в очередь (только если не достигли глубины)
+              // Добавляем новые ссылки в очередь
               if (shouldCollectDeeper) {
                 let addedCount = 0;
                 for (const link of newLinks) {
@@ -213,7 +280,7 @@ jobs:
               processed++;
               console.log(`⏳ Обработано страниц: ${processed}, Осталось в очереди: ${queue.length}`);
               
-              // Небольшая задержка
+              // Задержка между запросами
               await new Promise(resolve => setTimeout(resolve, 1000));
             }
             
@@ -237,7 +304,7 @@ jobs:
               depth: MAX_DEPTH,
               processed_pages: processed,
               timestamp: new Date().toISOString(),
-              domains: [...new Set(linksArray.map(l => new URL(l).hostname))]
+              domain: BASE_URL
             };
             
             await fs.writeFile(
