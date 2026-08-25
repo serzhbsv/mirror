@@ -1,76 +1,307 @@
-name: Зеркало footbook.ru
+name: Сбор ссылок footbook.ru
 
 on:
   workflow_dispatch:
+    inputs:
+      max_depth:
+        description: 'Глубина обхода (1-5)'
+        required: true
+        default: '3'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
 
 jobs:
-  mirror:
+  collect-links:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Авторизация и получение кук
-        run: |
-          # Шаг 1: Получаем куки с главной
-          curl -k -4 --connect-timeout 60 --max-time 300 \
-               -L https://footbook.ru/index.php \
-               -c cookies.txt -b cookies.txt -o /dev/null
-          
-          # Шаг 2: Отправляем форму логина
-          curl -k -4 --connect-timeout 60 --max-time 300 \
-               -X POST https://footbook.ru/login.php \
-               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-               -H "Content-Type: application/x-www-form-urlencoded" \
-               -H "Referer: https://footbook.ru/login.php" \
-               -d "login=${{ secrets.SITE_LOGIN }}" \
-               -d "password=${{ secrets.SITE_PASSWORD }}" \
-               -d "remember=on" \
-               -b cookies.txt \
-               -c cookies.txt \
-               -L
-          
-          echo "=== Куки получены ==="
-          cat cookies.txt
+      - name: Установка Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
       
-      - name: Скачивание сайта (без logout)
+      - name: Установка зависимостей
+        run: npm install puppeteer fs-extra
+    
+      - name: Создание скрипта для сбора ссылок
         run: |
-          wget --inet4-only \
-               --no-check-certificate \
-               --timeout=60 \
-               --tries=5 \
-               --mirror \
-               --page-requisites \
-               --convert-links \
-               --adjust-extension \
-               --no-parent \
-               --domains=footbook.ru \
-               --load-cookies cookies.txt \
-               --keep-session-cookies \
-               --header="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-               --header="Referer: https://footbook.ru/" \
-               --wait=2 \
-               --limit-rate=200k \
-               --reject-regex=".*logout.*|.*signout.*|.*exit.*" \
-               --exclude-directories="logout,exit,signout" \
-               https://footbook.ru
-          
-          echo "=== Результат ==="
-          du -sh ./footbook.ru 2>/dev/null || echo "Папка не создана"
-          find ./footbook.ru -type f 2>/dev/null | wc -l
+          cat > collect.js << 'EOF'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs-extra');
+          const path = require('path');
+
+          const BASE_URL = 'https://footbook.ru';
+          const OUTPUT_DIR = './collected_links';
+          const MAX_DEPTH = parseInt(process.env.MAX_DEPTH) || 3;
+
+          const visited = new Set();
+          const allLinks = new Set();
+          const queue = [];
+
+          console.log(`📊 Максимальная глубина: ${MAX_DEPTH}`);
+
+          // Авторизация
+          async function login(page) {
+            console.log('🔄 Авторизация...');
+            
+            await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+            
+            await page.type('input[name="login"]', process.env.SITE_LOGIN);
+            await page.type('input[name="password"]', process.env.SITE_PASSWORD);
+            await page.click('input[type="submit"]');
+            
+            await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
+            
+            console.log('✅ Авторизация успешна');
+          }
+
+          // Сбор ссылок с одной страницы
+          async function collectLinksFromPage(page, url, depth) {
+            try {
+              console.log(`🔍 [Глубина ${depth}] Сбор ссылок с: ${url}`);
+              
+              await page.goto(url, { 
+                waitUntil: 'networkidle2', 
+                timeout: 30000 
+              });
+              
+              // Ждём загрузки динамического контента
+              try {
+                await page.waitForSelector('#tree', { timeout: 5000 });
+                await page.waitForFunction(
+                  () => document.querySelector('#tree .jstree-node') !== null,
+                  { timeout: 10000 }
+                );
+              } catch (e) {
+                // Дерево не найдено - продолжаем
+              }
+              
+              // Собираем ссылки
+              const links = await page.evaluate(() => {
+                const result = new Set();
+                
+                // Обычные ссылки
+                document.querySelectorAll('a[href]').forEach(a => {
+                  let href = a.getAttribute('href');
+                  if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+                    if (href.startsWith('/')) {
+                      href = window.location.origin + href;
+                    }
+                    if (!href.includes('logout') && !href.includes('exit')) {
+                      result.add(href);
+                    }
+                  }
+                });
+                
+                // Ссылки из дерева (jstree)
+                document.querySelectorAll('.jstree-node').forEach(node => {
+                  const id = node.getAttribute('id');
+                  if (id && id !== '#') {
+                    result.add(`${window.location.origin}/index.php?type=1&lid=${id}`);
+                  }
+                });
+                
+                return Array.from(result);
+              });
+              
+              // Собираем города через AJAX
+              try {
+                const cities = await page.evaluate(() => {
+                  return new Promise((resolve) => {
+                    if (typeof $ !== 'undefined') {
+                      $.ajax({
+                        url: 'getplace.php',
+                        data: { par: 'all' },
+                        type: 'POST',
+                        cache: false,
+                        success: (data) => resolve(data)
+                      });
+                    } else {
+                      resolve([]);
+                    }
+                  });
+                }).catch(() => []);
+                
+                if (Array.isArray(cities)) {
+                  cities.forEach(city => {
+                    if (city.id) {
+                      allLinks.add(`${BASE_URL}/index.php?type=2&pid=${city.id}`);
+                    }
+                  });
+                }
+              } catch (e) {
+                // Ошибка получения городов
+              }
+              
+              // Добавляем ссылки в общий список
+              links.forEach(link => {
+                if (link.startsWith(BASE_URL) && !link.includes('logout')) {
+                  allLinks.add(link);
+                }
+              });
+              
+              console.log(`📊 Найдено ссылок на странице: ${links.length}`);
+              
+              // Возвращаем ссылки для дальнейшего обхода
+              return links.filter(link => 
+                link.startsWith(BASE_URL) && 
+                !link.includes('logout') &&
+                !link.includes('exit')
+              );
+              
+            } catch (error) {
+              console.error(`❌ Ошибка на ${url}:`, error.message);
+              return [];
+            }
+          }
+
+          // Основная функция
+          async function main() {
+            console.log('🚀 Запуск сбора ссылок...');
+            console.log(`📊 Глубина обхода: ${MAX_DEPTH}`);
+            
+            const browser = await puppeteer.launch({
+              headless: 'new',
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
+            
+            const page = await browser.newPage();
+            await page.setDefaultNavigationTimeout(60000);
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+            
+            // Авторизация
+            await login(page);
+            
+            // Добавляем главную страницу в очередь
+            queue.push({ url: BASE_URL, depth: 0 });
+            
+            // Обход страниц
+            let processed = 0;
+            const maxPages = 500; // Ограничение для безопасности
+            
+            while (queue.length > 0 && processed < maxPages) {
+              const { url, depth } = queue.shift();
+              
+              // Пропускаем если уже посетили
+              if (visited.has(url)) continue;
+              visited.add(url);
+              
+              // Если достигли максимальной глубины - не добавляем новые ссылки
+              const nextDepth = depth + 1;
+              const shouldCollectDeeper = nextDepth <= MAX_DEPTH;
+              
+              // Собираем ссылки
+              const newLinks = await collectLinksFromPage(page, url, depth);
+              
+              // Добавляем новые ссылки в очередь (только если не достигли глубины)
+              if (shouldCollectDeeper) {
+                let addedCount = 0;
+                for (const link of newLinks) {
+                  if (!visited.has(link) && !queue.some(item => item.url === link)) {
+                    queue.push({ url: link, depth: nextDepth });
+                    addedCount++;
+                  }
+                }
+                console.log(`📌 Добавлено в очередь: ${addedCount} ссылок (глубина ${nextDepth})`);
+              }
+              
+              processed++;
+              console.log(`⏳ Обработано страниц: ${processed}, Осталось в очереди: ${queue.length}`);
+              
+              // Небольшая задержка
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
+            console.log(`✅ Сбор завершён!`);
+            console.log(`📊 Всего уникальных ссылок: ${allLinks.size}`);
+            
+            // Сохраняем результаты
+            await fs.ensureDir(OUTPUT_DIR);
+            
+            const linksArray = Array.from(allLinks).sort();
+            
+            // Основной файл со ссылками
+            await fs.writeFile(
+              path.join(OUTPUT_DIR, 'all_links.txt'),
+              linksArray.join('\n')
+            );
+            
+            // Файл со статистикой
+            const stats = {
+              total: linksArray.length,
+              depth: MAX_DEPTH,
+              processed_pages: processed,
+              timestamp: new Date().toISOString(),
+              domains: [...new Set(linksArray.map(l => new URL(l).hostname))]
+            };
+            
+            await fs.writeFile(
+              path.join(OUTPUT_DIR, 'stats.json'),
+              JSON.stringify(stats, null, 2)
+            );
+            
+            // Группировка по типу
+            const linksByType = {
+              main: linksArray.filter(l => l.includes('index.php')),
+              regions: linksArray.filter(l => l.includes('type=1')),
+              cities: linksArray.filter(l => l.includes('type=2')),
+              matches: linksArray.filter(l => l.includes('type=3')),
+              other: linksArray.filter(l => !l.includes('type='))
+            };
+            
+            for (const [type, urls] of Object.entries(linksByType)) {
+              if (urls.length > 0) {
+                await fs.writeFile(
+                  path.join(OUTPUT_DIR, `links_${type}.txt`),
+                  urls.join('\n')
+                );
+              }
+            }
+            
+            console.log(`\n📊 Статистика:`);
+            console.log(`  - Всего ссылок: ${linksArray.length}`);
+            console.log(`  - Страницы: ${stats.processed_pages}`);
+            console.log(`  - Глубина: ${stats.depth}`);
+            console.log(`  - Основные: ${linksByType.main.length}`);
+            console.log(`  - Регионы: ${linksByType.regions.length}`);
+            console.log(`  - Города: ${linksByType.cities.length}`);
+            console.log(`  - Матчи: ${linksByType.matches.length}`);
+            
+            await browser.close();
+            console.log(`\n✅ Файлы сохранены в: ${OUTPUT_DIR}/`);
+          }
+
+          main().catch(console.error);
+          EOF
       
-      - name: Архивация и разбивка
+      - name: Запуск сбора ссылок
+        run: node collect.js
+        env:
+          SITE_LOGIN: ${{ secrets.SITE_LOGIN }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          MAX_DEPTH: ${{ github.event.inputs.max_depth }}
+      
+      - name: Проверка результатов
         run: |
-          if [ -d "./footbook.ru" ] && [ "$(ls -A ./footbook.ru)" ]; then
-            tar -czf footbook-mirror.tar.gz ./footbook.ru
-            split -b 500M footbook-mirror.tar.gz "footbook-part-" -a 2
-            ls -lh footbook-part-*
-          else
-            echo "⚠️ Папка пуста!"
-            exit 1
-          fi
+          echo "=== Статистика ==="
+          cat ./collected_links/stats.json
+          echo ""
+          echo "=== Первые 20 ссылок ==="
+          head -20 ./collected_links/all_links.txt
+          echo ""
+          echo "=== Количество ссылок по типам ==="
+          wc -l ./collected_links/links_*.txt
       
-      - name: Загрузка артефактов
+      - name: Загрузка результатов
         uses: actions/upload-artifact@v4
         with:
-          name: footbook-mirror-parts
-          path: footbook-part-*
+          name: collected-links-depth-${{ github.event.inputs.max_depth }}
+          path: |
+            ./collected_links/*.txt
+            ./collected_links/*.json
           retention-days: 7
