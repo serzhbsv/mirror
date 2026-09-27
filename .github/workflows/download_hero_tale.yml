@@ -7,42 +7,42 @@ jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: Create directories
+      - name: Download all files
         run: |
           mkdir -p Build StreamingAssets/aa/WebGL
 
-      - name: Download files
-        run: |
-          BASE="https://html-classic.itch.zone/html/8819725"
+          curl -L -o "Build/WebGLDemo.loader.js" \
+            "https://html-classic.itch.zone/html/8819725/Build/WebGLDemo.loader.js"
 
-          # Build files
-          curl -L -o Build/WebGLDemo.loader.js "$BASE/Build/WebGLDemo.loader.js"
-          curl -L -o Build/WebGLDemo.data.gz "$BASE/Build/WebGLDemo.data.gz"
-          curl -L -o Build/WebGLDemo.framework.js.gz "$BASE/Build/WebGLDemo.framework.js.gz"
-          curl -L -o Build/WebGLDemo.wasm.gz "$BASE/Build/WebGLDemo.wasm.gz"
+          curl -L -o "Build/WebGLDemo.data.gz" \
+            "https://html-classic.itch.zone/html/8819725/Build/WebGLDemo.data.gz"
 
-          # StreamingAssets
-          curl -L -o StreamingAssets/aa/settings.json "$BASE/StreamingAssets/aa/settings.json"
-          curl -L -o StreamingAssets/aa/catalog.json "$BASE/StreamingAssets/aa/catalog.json"
-          curl -L -o StreamingAssets/UnityServicesProjectConfiguration.json "$BASE/StreamingAssets/UnityServicesProjectConfiguration.json"
+          curl -L -o "Build/WebGLDemo.framework.js.gz" \
+            "https://html-classic.itch.zone/html/8819725/Build/WebGLDemo.framework.js.gz"
 
-          # Asset bundle
+          curl -L -o "Build/WebGLDemo.wasm.gz" \
+            "https://html-classic.itch.zone/html/8819725/Build/WebGLDemo.wasm.gz"
+
+          curl -L -o "StreamingAssets/aa/settings.json" \
+            "https://html-classic.itch.zone/html/8819725/StreamingAssets/aa/settings.json"
+
+          curl -L -o "StreamingAssets/aa/catalog.json" \
+            "https://html-classic.itch.zone/html/8819725/StreamingAssets/aa/catalog.json"
+
+          curl -L -o "StreamingAssets/UnityServicesProjectConfiguration.json" \
+            "https://html-classic.itch.zone/html/8819725/StreamingAssets/UnityServicesProjectConfiguration.json"
+
           curl -L -o "StreamingAssets/aa/WebGL/defaultlocalgroup_assets_all_5c0c45729a0a605d2d1f55fd848a8432.bundle" \
-            "$BASE/StreamingAssets/aa/WebGL/defaultlocalgroup_assets_all_5c0c45729a0a605d2d1f55fd848a8432.bundle"
+            "https://html-classic.itch.zone/html/8819725/StreamingAssets/aa/WebGL/defaultlocalgroup_assets_all_5c0c45729a0a605d2d1f55fd848a8432.bundle"
 
-      - name: Decompress .gz files
+      - name: List downloaded files
         run: |
-          cd Build
-          gunzip -k WebGLDemo.data.gz
-          gunzip -k WebGLDemo.framework.js.gz
-          gunzip -k WebGLDemo.wasm.gz
+          echo "=== Build ==="
+          ls -lh Build/
+          echo "=== StreamingAssets ==="
+          find StreamingAssets/ -type f -exec ls -lh {} \;
 
-      - name: Show file sizes
-        run: |
-          echo "=== Downloaded files ==="
-          find . -type f -exec ls -lh {} \;
-
-      - name: Upload as artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: hero-tale-webgl
